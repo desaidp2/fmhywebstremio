@@ -64,7 +64,11 @@ export class RuntimeStreamEngine implements StreamEngine {
             }
           };
           await consume(result);
+          if (process.env['VERCEL'] && source.family?.id === 'cinefork') {
+            process.stdout.write(`[cinefork] discovery=${result.type} candidates=${candidates.filter(candidate => candidate.sourceId === source.id).length} failures=${failures.filter(failure => failure.sourceId === source.id).map(failure => failure.code).join(',')}\n`);
+          }
         } catch (error) {
+          if (process.env['VERCEL'] && source.family?.id === 'cinefork') process.stdout.write(`[cinefork] exception=${error instanceof Error ? error.message : String(error)}\n`);
           if (!discoveryController.signal.aborted) {
             const typedFailure = error && typeof error === 'object' && 'failure' in error ? (error as { failure: Failure }).failure : undefined;
             failures.push(typedFailure ? { ...typedFailure, sourceId: typedFailure.sourceId ?? source.id, familyId: typedFailure.familyId ?? family.id } : { code: 'INTERNAL_ERROR', message: error instanceof Error ? error.message : String(error), stage: 'stage:engine', sourceId: source.id, familyId: family.id, observedAt: new Date(), diagnostic: { sensitivity: 'privileged', bodyCaptured: false } });
@@ -78,6 +82,7 @@ export class RuntimeStreamEngine implements StreamEngine {
       const preferredLanguages = options.preferredLanguages ?? request.preferredLanguages;
       const validation = await selector.validate(candidates, { concurrency: options.validationConcurrency ?? 8, ...(preferredLanguages && { preferredLanguages }), health: this.sources.health() }, controller.signal);
       failures.push(...validation.failures);
+      if (process.env['VERCEL']) process.stdout.write(`[cinefork] validated=${validation.streams.filter(stream => stream.sourceId === 'cinefork:cinefork.net').length} validationFailures=${validation.failures.filter(failure => failure.sourceId === 'cinefork:cinefork.net').map(failure => failure.code).join(',')}\n`);
       return { streams: validation.streams, failures, unverified: validation.unverified, deadline: { budgetMs, elapsedMs: Date.now() - started, exceeded: controller.signal.aborted, sourcesAttempted: attempted, sourcesCompleted: completed, sourcesCancelled: Math.max(cancelled, attempted - completed) } };
     } catch (error) {
       failures.push({ code: controller.signal.aborted ? 'TIMEOUT' : 'INTERNAL_ERROR', message: error instanceof Error ? error.message : String(error), stage: 'stage:engine', observedAt: new Date(), diagnostic: { sensitivity: 'privileged', bodyCaptured: false } });
