@@ -8,8 +8,7 @@ import { RuntimeStremioAdapter } from './addon/stremio-adapter';
 import { HlsRelay } from './addon/stremio-adapter/hls-relay';
 import { ConfigureController, HlsRelayController, ManifestController, StreamController } from './controller';
 import { RuntimeStreamEngine, StremioMediaResolver } from './engine/core';
-import { defaultFamilyHealthCorpora, DependencyGraph, FamilyHealthRunner, JsonDependencyStore, type SourceFamily } from './engine/health';
-import { StreamSelector } from './engine/protocols';
+import { DependencyGraph, JsonDependencyStore, type SourceFamily } from './engine/health';
 import { deploymentSourceRegistry, MatcherRegistry, RegistryExtractorLookup, SourceRegistry } from './engine/registry';
 import { ExtractionResolver } from './engine/resolver';
 import { TransportDirector } from './engine/transport';
@@ -121,7 +120,6 @@ const runtimeResolver = new ExtractionResolver(new RegistryExtractorLookup(new M
   const familyId = child.hints?.['sourceExtractor'];
   if (typeof sourceId === 'string' && typeof familyId === 'string') runtimeDependencies.record({ sourceId, familyId, provider: child.url.hostname, observedAt: new Date() });
 } });
-const runtimeHealth = new FamilyHealthRunner(runtimeResolver, new StreamSelector(runtimeTransport), runtimeTransport, runtimeSourceRegistry, 0.5, runtimeDependencies);
 const runtimeEngine = new RuntimeStreamEngine(new StremioMediaResolver(runtimeTransport, envGet('TMDB_ACCESS_TOKEN') ?? ''), runtimeSourceRegistry, runtimeFamilies, runtimeResolver, runtimeTransport, runtimeDependencies, runtimeDependencyStore);
 addon.use('/', (new HlsRelayController(runtimeRelay)).router);
 addon.use('/', (new StreamController(logger, new RuntimeStremioAdapter(runtimeEngine, runtimeSourceRegistry, runtimeRelay))).router);
@@ -160,7 +158,7 @@ addon.get('/stats', async (_req: Request, res: Response) => {
 
 runtimeSourceRegistry.restore(deploymentSourceRegistry);
 
-if (!process.env.VERCEL) {
+if (!process.env['VERCEL']) {
   const port = parseInt(envGet('PORT') || '51546');
   addon.listen(port, () => logger.info(`Add-on Repository URL: http://127.0.0.1:${port}/manifest.json`));
 }
