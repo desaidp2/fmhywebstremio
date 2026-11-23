@@ -6,7 +6,7 @@ import { CookieJar } from 'tough-cookie';
 import { captureDiagnostic, defaultRetryPolicyOf, type ExtractionRequest, type ExtractionResponse, type Failure, type FailureCode, type RequestServices, sanitizeDiagnosticUrl } from '../core/models';
 
 export class TransportFailure extends Error {
-  public constructor(public readonly failure: Failure) { super(failure.message); }
+  public constructor(public readonly failure: Failure, public readonly retryAfterMs?: number) { super(failure.message); }
 }
 export interface TransportDirectorOptions { globalConcurrency?: number; perHostConcurrency?: number; maxRedirects?: number; maxResponseBytes?: number; maxRetries?: number; blockedHosts?: readonly string[]; blockedCidrs?: readonly string[] }
 
@@ -54,7 +54,10 @@ export class TransportDirector implements RequestServices {
           if (!(error instanceof TransportFailure) || attempt >= this.maxRetries || signal.aborted) throw error;
           const policy = defaultRetryPolicyOf(error.failure.code);
           if (policy !== 'immediate' && policy !== 'backoff') throw error;
-          if (policy === 'backoff') await new Promise(resolve => setTimeout(resolve, 100 * (attempt + 1)));
+          if (policy === 'backoff') {
+            const delayMs = error.retryAfterMs ?? 100 * (attempt + 1);
+            await new Promise(resolve => setTimeout(resolve, Math.min(Math.max(delayMs, 100), 10000)));
+          }
         }
       }
     } finally {
@@ -114,6 +117,8 @@ export class TransportDirector implements RequestServices {
         const normalizedHeaders = Object.fromEntries([...response.headers.entries()].map(([name, value]) => [name.toLowerCase(), value]));
         const httpCode = response.status === 403 ? 'HTTP_FORBIDDEN' : response.status === 404 ? 'HTTP_NOT_FOUND' : response.status === 429 ? 'RATE_LIMITED' : response.status >= 500 ? 'HTTP_SERVER_ERROR' : undefined;
         if (httpCode) {
+          const retryAfter = response.headers.get('retry-after');
+          const retryAfterMs = retryAfter ? this.parseRetryAfter(retryAfter) : undefined;
           throw new TransportFailure({ code: httpCode, message: `HTTP request failed with status ${response.status}`, stage: 'stage:transport', targetHost: current.hostname, observedAt: new Date(), diagnostic: {
             ...captureDiagnostic({ status: response.status, headers: normalizedHeaders, finalUrl: current, redirectChain, body }, { maxBytes: 2048 }),
             transport: {
@@ -129,7 +134,7 @@ export class TransportDirector implements RequestServices {
               ...((normalizedHeaders['cf-cache-status'] ?? normalizedHeaders['x-cache']) && { cacheStatus: normalizedHeaders['cf-cache-status'] ?? normalizedHeaders['x-cache'] }),
               ...(normalizedHeaders['cf-ray'] && { edge: normalizedHeaders['cf-ray'] }),
             },
-          } });
+          } }, retryAfterMs);
         }
         this.assertContentType(request, normalizedHeaders['content-type'], current);
         const text = () => new TextDecoder(normalizedHeaders['content-type']?.match(/charset=([^;]+)/i)?.[1] ?? 'utf-8').decode(body);
@@ -145,6 +150,13 @@ export class TransportDirector implements RequestServices {
       clearTimeout(timeout);
       signal.removeEventListener('abort', onAbort);
     }
+  }
+
+  private parseRetryAfter(value: string): number | undefined {
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) ? Math.max(0, timestamp - Date.now()) : undefined;
   }
 
   private assertContentType(request: ExtractionRequest, contentType: string | undefined, url: URL): void {
