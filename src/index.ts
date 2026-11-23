@@ -165,9 +165,22 @@ addon.get('/stats', async (_req: Request, res: Response) => {
 });
 
 const port = parseInt(envGet('PORT') || '51546');
-(async () => {
+
+// Bind the HTTP port immediately so platforms such as Render can detect the
+// service while source restoration and startup health checks run in background.
+addon.listen(port, () => {
+  logger.info(`Add-on Repository URL: http://127.0.0.1:${port}/manifest.json`);
+});
+
+void (async () => {
   runtimeSourceRegistry.restore(deploymentSourceRegistry);
   runtimeDependencies.restore(await runtimeDependencyStore.load());
+
+  const dependencyReloadIntervalMs = Number(envGet('EXTRACTABILITY_RELOAD_INTERVAL_MS') ?? 60000);
+  if (dependencyReloadIntervalMs > 0) setInterval(() => {
+    void runtimeDependencyStore.load().then(edges => edges.forEach(edge => runtimeDependencies.record(edge))).catch((error: unknown) => logger.error(`Could not reload extraction dependencies: ${error instanceof Error ? error.message : String(error)}`));
+  }, dependencyReloadIntervalMs).unref();
+
   if (envIsProd()) {
     for (const source of runtimeSourceRegistry.runtimeEligible()) {
       const family = source.family && runtimeFamilies.get(source.family.id);
@@ -178,11 +191,6 @@ const port = parseInt(envGet('PORT') || '51546');
       }
     }
   }
-  const dependencyReloadIntervalMs = Number(envGet('EXTRACTABILITY_RELOAD_INTERVAL_MS') ?? 60000);
-  if (dependencyReloadIntervalMs > 0) setInterval(() => {
-    void runtimeDependencyStore.load().then(edges => edges.forEach(edge => runtimeDependencies.record(edge))).catch((error: unknown) => logger.error(`Could not reload extraction dependencies: ${error instanceof Error ? error.message : String(error)}`));
-  }, dependencyReloadIntervalMs).unref();
-  addon.listen(port, () => {
-    logger.info(`Add-on Repository URL: http://127.0.0.1:${port}/manifest.json`);
-  });
-})();
+})().catch((error: unknown) => {
+  logger.error(`Background startup initialization failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
+});
